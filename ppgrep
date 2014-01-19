@@ -1,0 +1,212 @@
+#!/bin/bash
+# Basic parallel grep. Searches recursively over its arguments.
+set -e
+declare -a args
+declare -a grep_opts
+declare -a find_opts
+declare -a parallel_opts
+
+declare -i want_binaries=0
+declare -i want_vcs=0
+declare -i want_ugly=0
+declare -i saw_dd=0
+declare -i have_re=0
+re=
+
+err() {
+    set +e
+    fmt=$1
+    shift
+    printf 'ppgrep: '"$fmt"'\n' "$@"
+    exit 1
+}
+
+if [[ -z $GREP ]] && type -p ggrep >/dev/null 2>&1; then
+    GREP=ggrep
+fi
+: ${GREP=grep}
+
+if [[ -z $SED ]] && type -p gsed >/dev/null 2>&1; then
+    SED=gsed
+fi
+: ${SED=sed}
+
+if [[ -z $FIND ]] && type -p gfind >/dev/null 2>&1; then
+    FIND=gfind
+fi
+: ${FIND=find}
+
+for tool in "$GREP" "$SED" "$FIND"; do
+    if ! $tool --version 2>&1 | head -n1 | grep -q GNU; then
+        err 'ERROR: GNU version of %s required' "$tool"
+    fi
+done
+
+while [[ $# -gt 0 ]]; do
+    if ((saw_dd)); then
+        args+=("$1")
+    elif [[ $1 == '--' ]]; then
+        saw_dd=1
+    elif [[ $1 == '--binaries' ]]; then
+        want_binaries=1
+    elif [[ $1 == '--vcs' ]]; then
+        want_vcs=1
+    elif [[ $1 == '--ugly' ]]; then
+        want_ugly=1
+    elif [[ $1 == '--re' ]]; then
+        shift
+        if [[ $# -eq 0 ]]; then
+            err '--re requires an argument'
+        fi
+        have_re=1
+        re=$1
+    elif [[ $1 == '--re='* ]]; then
+        have_re=1
+        re=${1:6}
+    elif [[ $1 == '--grep-option' ]]; then
+        shift
+        if [[ $# -eq 0 ]]; then
+            err '--grep-option requires an argument'
+        fi
+        grep_opts+=("$1")
+    elif [[ $1 == '--grep-option='* ]]; then
+        grep_opts+=("${1:15}")
+    elif [[ $1 == '--find-option' ]]; then
+        shift
+        if [[ $# -eq 0 ]]; then
+            err '--find-option requires an argument'
+        fi
+        find_opts+=("$1")
+    elif [[ $1 == '--find-option='* ]]; then
+        find_opts+=("${1:15}")
+    elif [[ $1 == '--parallel-option' ]]; then
+        shift
+        if [[ $# -eq 0 ]]; then
+            err '--parallel-option requires an argument'
+        fi
+        parallel_opts+=("$1")
+    elif [[ $1 == '--parallel-option='* ]]; then
+        parallel_opts+=("${1:18}")
+    elif [[ $1 == '--help' ]]; then
+        cat <<EOF
+ppgrep [OPTIONS] PATTERN [DIR1] [DIR2...]
+ppgrep [OPTIONS] [DIR1] [DIR2...] --re PATTERN [DIR3...]
+
+  Convenient wrapper for grep-like tools.
+
+  --binaries
+
+    Search for matches in binary files.
+
+  --vcs
+
+    Search for matches inside VCS metadata directories.
+
+  --ugly
+
+    Use bare grep output without line numbers or color.
+
+  --re PATTERN
+  --re=PATTERN
+
+    Search for this pattern.  This option is useful when
+    it is inconvenient to list the pattern before the
+    directories to search.
+
+  --grep-option OPTION
+  --grep-option=OPTION
+
+    Supply OPTION directly to grep.  Note that options
+    beginning with \`-' and not described here are automatically
+    given to grep.
+
+  --find-option OPTION
+  --find-option=OPTION
+    Supply OPTION directly to find.
+
+Help for $GREP follows
+
+EOF
+        $GREP --help
+        exit 0
+    elif [[ $1 = -* ]]; then
+        grep_opts+=("$1")
+    else
+        args+=("$1")
+    fi
+    shift
+done
+
+if ((!have_re)); then
+    if [[ ${#args[@]} -eq 0 ]]; then
+        err 'no pattern supplied'
+    fi
+    re=${args[0]}
+    args=("${args[@]:1}")
+fi
+
+if ((!want_ugly)); then
+    grep_opts+=(--with-filename --line-number)
+    # Because parallel connects grep to a pipe, grep doesn't think
+    # it's talking to a terminal that can display color.  Correct this
+    # misconception.
+    if [[ -t 1 ]]; then
+        grep_opts+=(--color=always)
+    fi
+fi
+
+if ((!want_binaries)); then
+    find_opts+=(-not -name '*.o'
+                -not -name '*.a'
+                -not -name '*.so.*'
+                -not -name '*.so')
+    grep_opts+=(-I)
+fi
+
+if ((!want_vcs)); then
+    find_opts+=(-not -path '*/.svn/*')
+    find_opts+=(-not -path '*/.git/*')
+    find_opts+=(-not -path '*/.bzr/*')
+    find_opts+=(-not -path '*/.hg/*')
+    find_opts+=(-not -path '*/RCS/*')
+fi
+
+if [[ ${#args[@]} -eq 0 ]]; then
+    args+=(.)
+fi
+
+# Create a temporary script that execs grep for us so that we don't
+# have to list grep command line options on parallel's command
+# line. This way, we avoid issues with grep arguments containing
+# parallel placeholders.
+
+run_grep_script=$(mktemp -t ppgrep-run-XXXXXX)
+if [[ -z $run_grep_script ]]; then
+    err 'temporary script file creation failed'
+fi
+
+cleanup() {
+    /bin/rm -f "$run_grep_script"
+}
+trap cleanup EXIT SIGINT SIGTERM
+
+chmod +x "$run_grep_script"
+{
+    printf 'exec %s' "$GREP"
+    for grep_arg in "${grep_opts[@]}"; do
+        printf ' %q' "$grep_arg"
+    done
+    printf ' -- %q "$@"\n' "$re"
+} > "$run_grep_script"
+
+# Actually perform the search
+{
+    for dir in "${args[@]}"; do
+        if [[ dir = -* ]]; then
+            dir=./$dir
+        fi
+        $FIND "$dir" -type f "${find_opts[@]}" -print0 \
+            | $SED -z 's,^\./,,'
+    done
+} | parallel -0 -k -n 1000 -m "${parallel_opts[@]}" \
+             "$run_grep_script"
