@@ -1,6 +1,7 @@
 #!/bin/bash
 # Basic parallel grep. Searches recursively over its arguments.
 set -e
+set -o pipefail
 declare -a args
 declare -a grep_opts
 declare -a find_opts
@@ -13,11 +14,13 @@ declare -i saw_dd=0
 declare -i have_re=0
 re=
 
+prgname=$(basename "$0")
+
 err() {
     set +e
     fmt=$1
     shift
-    printf 'ppgrep: '"$fmt"'\n' "$@"
+    printf >&2 '%s: '"$fmt"'\n' "$prgname" "$@"
     exit 1
 }
 
@@ -89,8 +92,8 @@ while [[ $# -gt 0 ]]; do
         parallel_opts+=("${1:18}")
     elif [[ $1 == '--help' ]]; then
         cat <<EOF
-ppgrep [OPTIONS] PATTERN [DIR1] [DIR2...]
-ppgrep [OPTIONS] [DIR1] [DIR2...] --re PATTERN [DIR3...]
+$prgname [OPTIONS] PATTERN [DIR1] [DIR2...]
+$prgname [OPTIONS] [DIR1] [DIR2...] --re PATTERN [DIR3...]
 
   Convenient wrapper for grep-like tools.
 
@@ -169,44 +172,92 @@ if ((!want_vcs)); then
     find_opts+=(-not -path '*/.bzr/*')
     find_opts+=(-not -path '*/.hg/*')
     find_opts+=(-not -path '*/RCS/*')
+    find_opts+=(-not -name '.*.dep')
 fi
 
 if [[ ${#args[@]} -eq 0 ]]; then
     args+=(.)
 fi
 
+run_grep_script=
+found_sentinel=
+
+cleanup() {
+    if [[ -f "$run_grep_script" ]]; then
+        /bin/rm -f "$run_grep_script"
+    fi
+    if [[ -f "$found_sentinel" ]]; then
+        /bin/rm -f "$found_sentinel"
+    fi
+}
+trap cleanup EXIT SIGINT SIGTERM
+
+# Create a sentinel file to record whether we found any
+# matches. The file starts off empty: in the grep-running script, we
+# examine grep's exit status, and if grep found at least one match, we
+# put a byte in the sentinel file. After we've run all our greps, we
+# just test the sentinel file to determine whether we found any
+# matches overall.
+found_sentinel=$(mktemp -t ppgrep-run-found-XXXXXX)
+
+# Before we run find and grep in anger, run grep manually against
+# /dev/null so that we can catch any usage errors. This way, we print
+# one error message, not one for each grep parallel spawns.
+set +e
+( exec -a "$prgname" $GREP "${grep_opts[@]}" "$re" /dev/null >/dev/null )
+rs=$?
+set -e
+if ((rs >= 2)); then
+    exit $rs
+fi
+
 # Create a temporary script that execs grep for us so that we don't
 # have to list grep command line options on parallel's command
 # line. This way, we avoid issues with grep arguments containing
 # parallel placeholders.
-
 run_grep_script=$(mktemp -t ppgrep-run-XXXXXX)
-if [[ -z $run_grep_script ]]; then
-    err 'temporary script file creation failed'
-fi
-
-cleanup() {
-    /bin/rm -f "$run_grep_script"
-}
-trap cleanup EXIT SIGINT SIGTERM
-
-chmod +x "$run_grep_script"
 {
-    printf 'exec %s' "$GREP"
+    printf '( exec -a %q %s' "$prgname" "$GREP"
     for grep_arg in "${grep_opts[@]}"; do
         printf ' %q' "$grep_arg"
     done
-    printf ' -- %q "$@"\n' "$re"
+    printf ' -- %q "$@")\n' "$re"
+    # Grep exits with status 1 if it completed successfully, but
+    # didn't find anything.  In this case, we want to return zero so
+    # that parallel doesn't think we actually failed.
+    printf 'es=$?\n'
+    printf 'if [[ $es -eq 0 ]]; then echo 1 > %q && exit 0; fi\n' \
+           "$found_sentinel"
+    printf 'if [[ $es -eq 1 ]]; then exit 0; fi\n'
+    printf 'exit $es\n'
 } > "$run_grep_script"
 
 # Actually perform the search
-{
+enumerate_files() {
+    local stage_exit=0
+    local dir
+    
     for dir in "${args[@]}"; do
         if [[ dir = -* ]]; then
             dir=./$dir
         fi
-        $FIND "$dir" -type f "${find_opts[@]}" -print0 \
-            | $SED -z 's,^\./,,'
+
+        if ! exec -a "$prgname" $FIND "$dir" -type f "${find_opts[@]}" -print0 \
+           | $SED -z 's,^\./,,';
+        then
+            stage_exit=2
+        fi
     done
-} | parallel -0 -k -n 1000 -m "${parallel_opts[@]}" \
-             "$run_grep_script"
+    return $stage_exit
+}
+
+if enumerate_files | parallel -0 -k -n 1000 -m "${parallel_opts[@]}" \
+                              $BASH "$run_grep_script";
+then
+    if ! [[ -s "$found_sentinel" ]]; then
+        exit 1 # Successfully found nothing
+    fi
+    exit 0
+else
+    exit 2
+fi
