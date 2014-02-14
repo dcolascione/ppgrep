@@ -219,7 +219,7 @@ found_sentinel=$(mktemp -t ppgrep-run-found-XXXXXX)
 # /dev/null so that we can catch any usage errors. This way, we print
 # one error message, not one for each grep parallel spawns.
 set +e
-( exec -a "$prgname" $GREP "${grep_opts[@]}" "$re" /dev/null >/dev/null )
+( exec -a "$prgname" $GREP "${grep_opts[@]}" -- "$re" /dev/null >/dev/null )
 rs=$?
 set -e
 if ((rs >= 2)); then
