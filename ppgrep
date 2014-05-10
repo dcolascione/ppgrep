@@ -24,9 +24,16 @@ declare -a parallel_opts
 
 declare -i want_binaries=0
 declare -i want_vcs=0
+declare -i want_autoconf=0
 declare -i want_ugly=0
 declare -i saw_dd=0
 declare -i have_re=0
+declare -i filenames_and_line_numbers=1
+declare -i want_changelogs=0
+declare -i want_build_files=0
+declare -i want_backups=0
+declare -i want_pager=0
+declare -i max_args_per_grep=1000
 re=
 
 prgname=$(basename "$0")
@@ -69,8 +76,16 @@ while [[ $# -gt 0 ]]; do
         want_binaries=1
     elif [[ $1 == '--vcs' ]]; then
         want_vcs=1
+    elif [[ $1 == '--autoconf' ]]; then
+        want_autoconf=1
     elif [[ $1 == '--ugly' ]]; then
         want_ugly=1
+    elif [[ $1 == '--changelogs' ]]; then
+        want_changelogs=1
+    elif [[ $1 == '--build-files' ]]; then
+        want_build_files=1
+    elif [[ $1 == '--backups' ]]; then
+        want_backups=1
     elif [[ $1 == '--re' ]]; then
         shift
         if [[ $# -eq 0 ]]; then
@@ -88,7 +103,7 @@ while [[ $# -gt 0 ]]; do
         fi
         grep_opts+=("$1")
     elif [[ $1 == '--grep-option='* ]]; then
-        grep_opts+=("${1:15}")
+        grep_opts+=("${1:14}")
     elif [[ $1 == '--find-option' ]]; then
         shift
         if [[ $# -eq 0 ]]; then
@@ -96,7 +111,7 @@ while [[ $# -gt 0 ]]; do
         fi
         find_opts+=("$1")
     elif [[ $1 == '--find-option='* ]]; then
-        find_opts+=("${1:15}")
+        find_opts+=("${1:14}")
     elif [[ $1 == '--parallel-option' ]]; then
         shift
         if [[ $# -eq 0 ]]; then
@@ -105,6 +120,10 @@ while [[ $# -gt 0 ]]; do
         parallel_opts+=("$1")
     elif [[ $1 == '--parallel-option='* ]]; then
         parallel_opts+=("${1:18}")
+    elif [[ $1 == '-p' || $1 == '--pager' ]]; then
+        want_pager=1
+    elif [[ $1 == '--I='* ]]; then
+        grep_opts+=("--include=${1:4}")
     elif [[ $1 == '--help' ]]; then
         cat <<EOF
 $prgname [OPTIONS] PATTERN [DIR1] [DIR2...]
@@ -120,9 +139,25 @@ $prgname [OPTIONS] [DIR1] [DIR2...] --re PATTERN [DIR3...]
 
     Search for matches inside VCS metadata directories.
 
+  --autoconf
+
+    Search for matches inside autoconf-generated files.
+
   --ugly
 
     Use bare grep output without line numbers or color.
+
+  --changelogs
+
+    Include changelog files.
+
+  --build-files
+
+    Include miscellaneous internal build files.
+
+  --backups
+
+    Include files that look like backup files.
 
   --re PATTERN
   --re=PATTERN
@@ -140,7 +175,16 @@ $prgname [OPTIONS] [DIR1] [DIR2...] --re PATTERN [DIR3...]
 
   --find-option OPTION
   --find-option=OPTION
+
     Supply OPTION directly to find.
+
+  -p --pager
+
+    Send output to pager, making sure to preserve color.
+
+  --I=INC
+
+    Convenient alias for grep --include=INC.
 
 Help for $GREP follows
 
@@ -148,6 +192,9 @@ EOF
         $GREP --help
         exit 0
     elif [[ $1 = -* ]]; then
+        if [[ $1 = -[^-]*h* ]]; then
+            filenames_and_line_numbers=0
+        fi
         grep_opts+=("$1")
     else
         args+=("$1")
@@ -164,13 +211,34 @@ if ((!have_re)); then
 fi
 
 if ((!want_ugly)); then
-    grep_opts+=(--with-filename --line-number)
+    if ((filenames_and_line_numbers)); then
+        grep_opts+=(--with-filename --line-number)
+    fi
+
     # Because parallel connects grep to a pipe, grep doesn't think
     # it's talking to a terminal that can display color.  Correct this
-    # misconception.
-    if [[ -t 1 ]]; then
+    # misconception and force-enable color if we're talking to a tty
+    # or if we're going to be sending output to a pager we know will
+    # support color.
+    if [[ -t 1 ]] || ((want_pager)); then
         grep_opts+=(--color=always)
     fi
+fi
+
+if ((!want_changelogs)); then
+    find_opts+=(-not -name 'ChangeLog'
+                -not -name 'ChangeLog.*')
+fi
+
+if ((!want_build_files)); then
+    # The Linux kernel build system generates these
+    find_opts+=(-not -name '.*.o.cmd'
+                -not -name '*.o.d'
+                -not -name '.tmp_System.map')
+fi
+
+if ((!want_backups)); then
+    find_opts+=(-not -name '*.*~*')
 fi
 
 if ((!want_binaries)); then
@@ -184,10 +252,20 @@ fi
 if ((!want_vcs)); then
     find_opts+=(-not -path '*/.svn/*')
     find_opts+=(-not -path '*/.git/*')
+    find_opts+=(-not -path '*/.pc/*')
     find_opts+=(-not -path '*/.bzr/*')
     find_opts+=(-not -path '*/.hg/*')
     find_opts+=(-not -path '*/RCS/*')
-    find_opts+=(-not -name '.*.dep')
+fi
+
+if((!want_autoconf)); then
+    find_opts+=(-not -path '*/.deps/*')
+    find_opts+=(-not -path '*/autom4te.cache/*')
+    find_opts+=(-not -path '*.dep*')
+    find_opts+=(-not -name 'configure')
+    find_opts+=(-not -name 'config.log')
+    find_opts+=(-not -name 'config.status')
+    find_opts+=(-not -name 'libtool')
 fi
 
 if [[ ${#args[@]} -eq 0 ]]; then
@@ -251,7 +329,7 @@ run_grep_script=$(mktemp -t ppgrep-run-XXXXXX)
 enumerate_files() {
     local stage_exit=0
     local dir
-    
+
     for dir in "${args[@]}"; do
         if [[ dir = -* ]]; then
             dir=./$dir
@@ -266,9 +344,21 @@ enumerate_files() {
     return $stage_exit
 }
 
-if enumerate_files | parallel -0 -k -n 1000 -m "${parallel_opts[@]}" \
-                              $BASH "$run_grep_script";
-then
+parallel_opts=(-0 -k -n $max_args_per_grep -m "${parallel_opts[@]}")
+
+set +e
+if ((want_pager)); then
+    enumerate_files \
+        | parallel "${parallel_opts[@]}" $BASH "$run_grep_script" \
+        | ${PAGER-less} -R
+else
+    enumerate_files \
+        | parallel "${parallel_opts[@]}" $BASH "$run_grep_script"
+fi
+mcret=$?
+set -e
+
+if ((mcret==0)); then
     if ! [[ -s "$found_sentinel" ]]; then
         exit 1 # Successfully found nothing
     fi
