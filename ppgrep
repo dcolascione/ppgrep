@@ -235,6 +235,8 @@ if ((!want_build_files)); then
     find_opts+=(-not -name '.*.o.cmd'
                 -not -name '*.o.d'
                 -not -name '.tmp_System.map')
+    # Buck
+    find_opts+=(-not -path '*/buck-out/*')
 fi
 
 if ((!want_backups)); then
