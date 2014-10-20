@@ -227,7 +227,7 @@ fi
 
 if ((!want_changelogs)); then
     find_opts+=(-not -name 'ChangeLog'
-                -not -name 'ChangeLog.*')
+                -not -name 'ChangeLog[-.]*')
 fi
 
 if ((!want_build_files)); then
@@ -258,6 +258,7 @@ if ((!want_vcs)); then
     find_opts+=(-not -path '*/.bzr/*')
     find_opts+=(-not -path '*/.hg/*')
     find_opts+=(-not -path '*/RCS/*')
+    find_opts+=(-not -path '*/*.xcodeproj/*')
 fi
 
 if((!want_autoconf)); then
