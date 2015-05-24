@@ -348,6 +348,7 @@ enumerate_files() {
     return $stage_exit
 }
 
+parallel_opts=(--no-notice "${parallel_opts[@]}")
 parallel_opts=(-0 -k -n $max_args_per_grep -m "${parallel_opts[@]}")
 
 set +e
