@@ -339,7 +339,7 @@ enumerate_files() {
             dir=./$dir
         fi
 
-        if ! exec -a "$prgname" $FIND "$dir" -type f "${find_opts[@]}" -print0 \
+        if ! exec -a "$prgname" $FIND -L "$dir" -type f "${find_opts[@]}" -print0 \
            | $SED -z 's,^\./,,';
         then
             stage_exit=2
