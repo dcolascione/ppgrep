@@ -348,17 +348,47 @@ enumerate_files() {
     return $stage_exit
 }
 
-parallel_opts=(--no-notice "${parallel_opts[@]}")
+: ${PARALLEL=parallel}
+parallel_executable=$(type -p "$PARALLEL" || true)
+if [[ -z $parallel_executable ]]; then
+    err "parallel program [called '%s'] not found" "$PARALLEL"
+fi
+
+dotdir=$HOME/.ppgrep
+if ! [[ -d $dotdir ]]; then
+    mkdir -p "$dotdir"
+fi
+cache_file=$dotdir/cache
+
+cached_parallel_executable=
+cached_parallel_version=
+source "$cache_file" 2>/dev/null || true
+if { [[ $cached_parallel_executable != "$parallel_executable" ]] \
+         || [[ $parallel_executable -nt $cache_file ]]; };
+then
+    cached_parallel_executable=$parallel_executable
+    cached_parallel_version=$($PARALLEL --version 2>&1 | head -n1)
+    if ! [[ $cached_parallel_version == "GNU parallel "* ]]; then
+        err "No GNU parallel found [%s]" "$parallel_version"
+    fi
+    printf 'cached_parallel_executable=%q\ncached_parallel_version=%q\n' \
+           "$parallel_executable" "$cached_parallel_version" > "$cache_file"
+fi
+
+if ! [[ $cached_parallel_version == "GNU parallel 2013"* ]]; then
+    parallel_opts=(--no-notice "${parallel_opts[@]}")
+fi
+
 parallel_opts=(-0 -k -n $max_args_per_grep -m "${parallel_opts[@]}")
 
 set +e
 if ((want_pager)); then
     enumerate_files \
-        | parallel "${parallel_opts[@]}" $BASH "$run_grep_script" \
+        | "$parallel_executable" "${parallel_opts[@]}" $BASH "$run_grep_script" \
         | ${PAGER-less} -R
 else
     enumerate_files \
-        | parallel "${parallel_opts[@]}" $BASH "$run_grep_script"
+        | "$parallel_executable" "${parallel_opts[@]}" $BASH "$run_grep_script"
 fi
 mcret=$?
 set -e
