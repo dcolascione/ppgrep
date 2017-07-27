@@ -329,6 +329,19 @@ run_grep_script=$(mktemp -t ppgrep-run-XXXXXX)
     printf 'exit $es\n'
 } > "$run_grep_script"
 
+filter_find_stderr() {
+    local line
+    while read -r line; do
+        if [[ $line = *': Too many levels of symbolic links' ]]; then
+            continue
+        fi
+        if [[ $line = *': Permission denied' ]]; then
+            continue
+        fi
+        printf >&2 '%s\n' "$line"
+    done
+}
+
 # Actually perform the search
 enumerate_files() {
     local stage_exit=0
@@ -340,6 +353,7 @@ enumerate_files() {
         fi
 
         if ! exec -a "$prgname" $FIND -L "$dir" -type f "${find_opts[@]}" -print0 \
+             2> >(filter_find_stderr) \
            | $SED -z 's,^\./,,';
         then
             stage_exit=2
