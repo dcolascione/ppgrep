@@ -95,7 +95,7 @@ while [[ $# -gt 0 ]]; do
         re=$1
     elif [[ $1 == '--re='* ]]; then
         have_re=1
-        re=${1:6}
+        re=${1#*=}
     elif [[ $1 == '--grep-option' ]]; then
         shift
         if [[ $# -eq 0 ]]; then
@@ -103,7 +103,7 @@ while [[ $# -gt 0 ]]; do
         fi
         grep_opts+=("$1")
     elif [[ $1 == '--grep-option='* ]]; then
-        grep_opts+=("${1:14}")
+        grep_opts+=("${1#*=}")
     elif [[ $1 == '--find-option' ]]; then
         shift
         if [[ $# -eq 0 ]]; then
@@ -111,7 +111,7 @@ while [[ $# -gt 0 ]]; do
         fi
         find_opts+=("$1")
     elif [[ $1 == '--find-option='* ]]; then
-        find_opts+=("${1:14}")
+        find_opts+=("${1#*=}")
     elif [[ $1 == '--parallel-option' ]]; then
         shift
         if [[ $# -eq 0 ]]; then
@@ -119,11 +119,11 @@ while [[ $# -gt 0 ]]; do
         fi
         parallel_opts+=("$1")
     elif [[ $1 == '--parallel-option='* ]]; then
-        parallel_opts+=("${1:18}")
+        parallel_opts+=("${1#*=}")
     elif [[ $1 == '-p' || $1 == '--pager' ]]; then
         want_pager=1
     elif [[ $1 == '--I='* ]]; then
-        grep_opts+=("--include=${1:4}")
+        grep_opts+=("--include=${1#*=}")
     elif [[ $1 == '--help' ]]; then
         cat <<EOF
 $prgname [OPTIONS] PATTERN [DIR1] [DIR2...]
