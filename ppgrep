@@ -20,7 +20,7 @@ set -o pipefail
 declare -a args
 declare -a grep_opts
 declare -a find_opts
-declare -a parallel_opts
+declare -a parallel_opts=(--will-cite)
 
 declare -i want_binaries=0
 declare -i want_vcs=0
